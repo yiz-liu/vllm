@@ -10,13 +10,22 @@ prompts = [
     "The future of AI is",
 ]
 # Create a sampling params object.
-sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
+sampling_params = SamplingParams(temperature=0)
 
 # Create an LLM.
-llm = LLM(model="facebook/opt-125m")
+llm = LLM(
+    model="/home/data/weights/deepseek-ai/deepseekv3-lite-base-latest",
+    # model="/home/data/weights/facebook/opt-125m",
+    tensor_parallel_size=4,
+    distributed_executor_backend="mp",
+    trust_remote_code=True,
+    enforce_eager=True,
+)
 # Generate texts from the prompts. The output is a list of RequestOutput objects
 # that contain the prompt, generated text, and other information.
+# llm.start_profile()
 outputs = llm.generate(prompts, sampling_params)
+# llm.stop_profile()
 # Print the outputs.
 for output in outputs:
     prompt = output.prompt

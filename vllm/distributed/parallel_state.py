@@ -840,9 +840,21 @@ def init_distributed_environment(
             "world group already initialized with a different world size")
 
 
+_EP: Optional[GroupCoordinator] = None
+_ETP: Optional[list[GroupCoordinator]] = None
+
+def get_ep_group() -> GroupCoordinator:
+    assert _EP is not None, ("expert model parallel group is not initialized")
+    return _EP
+
+def get_etp_group() -> GroupCoordinator:
+    assert _ETP is not None, ("expert tensor parallel group is not initialized")
+    return _ETP
+
 def initialize_model_parallel(
     tensor_model_parallel_size: int = 1,
     pipeline_model_parallel_size: int = 1,
+    expert_tensor_parallel_size: int = 1,
     backend: Optional[str] = None,
 ) -> None:
     """
@@ -873,6 +885,38 @@ def initialize_model_parallel(
     backend = backend or torch.distributed.get_backend(
         get_world_group().device_group)
 
+    num_expert_parallel_groups: int = (world_size //
+                                       (tensor_model_parallel_size // 
+                                        expert_tensor_parallel_size))
+    num_expert_tensor_parallel_groups: int = (tensor_model_parallel_size // 
+                                              expert_tensor_parallel_size)
+
+    global _EP
+    assert _EP is None, ("expert parallel group is already initialized")
+    group_ranks = []
+    for i in range(num_expert_parallel_groups):
+        ranks = list(range(i, world_size, num_expert_parallel_groups))
+        group_ranks.append(ranks)
+
+    _EP = init_model_parallel_group(group_ranks,
+                                    get_world_group().local_rank,
+                                    backend,
+                                    group_name="ep")
+
+    group_ranks = []
+    global _ETP
+    assert _ETP is None, (
+        "expert tensor parallel group is already initialized")
+    for i in range(num_expert_tensor_parallel_groups):
+        ranks = list(range(i * expert_tensor_parallel_size,
+                           (i + 1) * expert_tensor_parallel_size))
+        group_ranks.append(ranks)
+
+    _ETP = init_model_parallel_group(group_ranks,
+                                     get_world_group().local_rank,
+                                     backend,
+                                     group_name="etp")
+
     # Build the tensor model-parallel groups.
     num_tensor_model_parallel_groups: int = (world_size //
                                              tensor_model_parallel_size)
@@ -902,6 +946,7 @@ def initialize_model_parallel(
     for i in range(num_pipeline_model_parallel_groups):
         ranks = list(range(i, world_size, num_pipeline_model_parallel_groups))
         group_ranks.append(ranks)
+
     _PP = init_model_parallel_group(group_ranks,
                                     get_world_group().local_rank,
                                     backend,
@@ -931,6 +976,7 @@ def ensure_kv_transfer_initialized(vllm_config: "VllmConfig") -> None:
 def ensure_model_parallel_initialized(
     tensor_model_parallel_size: int,
     pipeline_model_parallel_size: int,
+    expert_tensor_parallel_size: int,
     backend: Optional[str] = None,
 ) -> None:
     """Helper to initialize model parallel groups if they are not initialized,
@@ -941,7 +987,8 @@ def ensure_model_parallel_initialized(
         get_world_group().device_group)
     if not model_parallel_is_initialized():
         initialize_model_parallel(tensor_model_parallel_size,
-                                  pipeline_model_parallel_size, backend)
+                                  pipeline_model_parallel_size,
+                                  expert_tensor_parallel_size, backend)
         return
 
     assert (

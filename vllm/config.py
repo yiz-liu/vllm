@@ -1286,6 +1286,7 @@ class ParallelConfig:
 
     pipeline_parallel_size: int = 1  # Number of pipeline parallel groups.
     tensor_parallel_size: int = 1  # Number of tensor parallel groups.
+    expert_tensor_parallel_size: int = 1
 
     # Maximum number of multiple batches
     # when load model sequentially. To avoid RAM OOM when using tensor

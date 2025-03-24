@@ -945,8 +945,8 @@ def initialize_model_parallel(
         "expert tensor parallel group is already initialized")
     for j in range(data_parallel_size):
         for i in range(num_expert_tensor_parallel_groups):
-            ranks = list(range((i+j) * expert_tensor_parallel_size,
-                               (i+j + 1) * expert_tensor_parallel_size))
+            ranks = list(range(i * expert_tensor_parallel_size + j * data_parallel_size,
+                               (i + 1) * expert_tensor_parallel_size + j * data_parallel_size))
             group_ranks.append(ranks)
 
 

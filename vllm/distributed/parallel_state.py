@@ -885,11 +885,8 @@ def initialize_model_parallel(
     backend = backend or torch.distributed.get_backend(
         get_world_group().device_group)
 
-    num_expert_parallel_groups: int = (world_size //
-                                       (tensor_model_parallel_size // 
-                                        expert_tensor_parallel_size))
-    num_expert_tensor_parallel_groups: int = (tensor_model_parallel_size // 
-                                              expert_tensor_parallel_size)
+    num_expert_parallel_groups: int = expert_tensor_parallel_size
+    num_expert_tensor_parallel_groups: int = world_size // expert_tensor_parallel_size
 
     global _EP
     assert _EP is None, ("expert parallel group is already initialized")

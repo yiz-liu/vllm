@@ -917,10 +917,14 @@ def initialize_model_parallel(
         tensor_model_parallel_size)
 
     num_expert_parallel_groups: int = (world_size //
-                                       (tensor_model_parallel_size // 
+                                       (tensor_model_parallel_size //
                                         expert_tensor_parallel_size))
-    num_expert_tensor_parallel_groups: int = (tensor_model_parallel_size // 
+    num_expert_tensor_parallel_groups: int = (tensor_model_parallel_size //
                                               expert_tensor_parallel_size)
+    num_tensor_model_parallel_groups: int = (world_size //
+                                             tensor_model_parallel_size)
+
+
 
     global _EP
     assert _EP is None, ("expert parallel group is already initialized")
@@ -939,22 +943,20 @@ def initialize_model_parallel(
     global _ETP
     assert _ETP is None, (
         "expert tensor parallel group is already initialized")
-    # for i in range(num_expert_tensor_parallel_groups):
-    #     ranks = list(range(i * expert_tensor_parallel_size,
-    #                        (i + 1) * expert_tensor_parallel_size))
-    #     group_ranks.append(ranks)
-    for i in range(num_expert_parallel_groups):
-        ranks = list(range(i, world_size, num_expert_parallel_groups))
-        group_ranks.append(ranks)
+    for j in range(data_parallel_size):
+        for i in range(num_expert_tensor_parallel_groups):
+            ranks = list(range((i+j) * expert_tensor_parallel_size,
+                               (i+j + 1) * expert_tensor_parallel_size))
+            group_ranks.append(ranks)
+
+
     print(f"==========================ETP group_ranks:{group_ranks}")
     _ETP = init_model_parallel_group(group_ranks,
                                      get_world_group().local_rank,
                                      backend,
                                      group_name="etp")
 
-    # Build the tensor model-parallel groups.
-    num_tensor_model_parallel_groups: int = (world_size //
-                                             tensor_model_parallel_size)
+
     global _TP
     assert _TP is None, ("tensor model parallel group is already initialized")
     group_ranks = []

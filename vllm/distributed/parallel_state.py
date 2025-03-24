@@ -919,9 +919,9 @@ def initialize_model_parallel(
 
     print(f"------------------------tensor_model_parallel_size:{tensor_model_parallel_size};----------------------expert_tensor_parallel_size:{expert_tensor_parallel_size}")
     num_expert_parallel_groups: int = (world_size //
-                                       (tensor_model_parallel_size //
+                                       (tensor_model_parallel_size // 
                                         expert_tensor_parallel_size))
-    num_expert_tensor_parallel_groups: int = (tensor_model_parallel_size //
+    num_expert_tensor_parallel_groups: int = (tensor_model_parallel_size // 
                                               expert_tensor_parallel_size)
 
     global _EP

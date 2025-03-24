@@ -483,6 +483,109 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         )
 
 
+# class WorkerWrapperBase:
+#     """
+#     This class represents one process in an executor/engine. It is responsible
+#     for lazily initializing the worker and handling the worker's lifecycle.
+#     We first instantiate the WorkerWrapper, which remembers the worker module
+#     and class name. Then, when we call `update_environment_variables`, and the
+#     real initialization happens in `init_worker`.
+#     """
+#
+#     def __init__(
+#         self,
+#         vllm_config: VllmConfig,
+#         rpc_rank: int = 0,
+#     ) -> None:
+#         """
+#         Initialize the worker wrapper with the given vllm_config and rpc_rank.
+#         Note: rpc_rank is the rank of the worker in the executor. In most cases,
+#         it is also the rank of the worker in the distributed group. However,
+#         when multiple executors work together, they can be different.
+#         e.g. in the case of SPMD-style offline inference with TP=2,
+#         users can launch 2 engines/executors, each with only 1 worker.
+#         All workers have rpc_rank=0, but they have different ranks in the TP
+#         group.
+#         """
+#         self.rpc_rank = rpc_rank
+#         self.worker: Optional[WorkerBase] = None
+#         # do not store this `vllm_config`, `init_worker` will set the final
+#         # one. TODO: investigate if we can remove this field in
+#         # `WorkerWrapperBase`, `init_cached_hf_modules` should be
+#         # unnecessary now.
+#         if vllm_config.model_config is not None:
+#             # it can be None in tests
+#             trust_remote_code = vllm_config.model_config.trust_remote_code
+#             if trust_remote_code:
+#                 # note: lazy import to avoid importing torch before initializing
+#                 from vllm.utils import init_cached_hf_modules
+#                 init_cached_hf_modules()
+#
+#     def adjust_rank(self, rank_mapping: Dict[int, int]) -> None:
+#         """
+#         Adjust the rpc_rank based on the given mapping.
+#         It is only used during the initialization of the executor,
+#         to adjust the rpc_rank of workers after we create all workers.
+#         """
+#         if self.rpc_rank in rank_mapping:
+#             self.rpc_rank = rank_mapping[self.rpc_rank]
+#
+#     def update_environment_variables(self, envs_list: List[Dict[str,
+#                                                                 str]]) -> None:
+#         envs = envs_list[self.rpc_rank]
+#         key = 'CUDA_VISIBLE_DEVICES'
+#         if key in envs and key in os.environ:
+#             # overwriting CUDA_VISIBLE_DEVICES is desired behavior
+#             # suppress the warning in `update_environment_variables`
+#             del os.environ[key]
+#         update_environment_variables(envs)
+#
+#     def init_worker(self, all_kwargs: List[Dict[str, Any]]) -> None:
+#         """
+#         Here we inject some common logic before initializing the worker.
+#         Arguments are passed to the worker class constructor.
+#         """
+#         kwargs = all_kwargs[self.rpc_rank]
+#         self.vllm_config = kwargs.get("vllm_config", None)
+#         assert self.vllm_config is not None, (
+#             "vllm_config is required to initialize the worker")
+#         enable_trace_function_call_for_thread(self.vllm_config)
+#
+#         from vllm.plugins import load_general_plugins
+#         load_general_plugins()
+#
+#         if isinstance(self.vllm_config.parallel_config.worker_cls, str):
+#             worker_class = resolve_obj_by_qualname(
+#                 self.vllm_config.parallel_config.worker_cls)
+#         else:
+#             assert isinstance(self.vllm_config.parallel_config.worker_cls,
+#                               bytes)
+#             worker_class = cloudpickle.loads(
+#                 self.vllm_config.parallel_config.worker_cls)
+#         with set_current_vllm_config(self.vllm_config):
+#             # To make vLLM config available during worker initialization
+#             self.worker = worker_class(**kwargs)
+#             assert self.worker is not None
+#
+#
+#     def execute_method(self, method: Union[str, bytes], *args, **kwargs):
+#         try:
+#             target = self if self.worker is None else self.worker
+#             return run_method(target, method, args, kwargs)
+#         except Exception as e:
+#             # if the driver worker also execute methods,
+#             # exceptions in the rest worker may cause deadlock in rpc like ray
+#             # see https://github.com/vllm-project/vllm/issues/3455
+#             # print the error and inform the user to solve the error
+#             msg = (f"Error executing method {method!r}. "
+#                    "This might cause deadlock in distributed execution.")
+#             logger.exception(msg)
+#             raise e
+#
+#     def __getattr__(self, attr):
+#         return getattr(self.worker, attr)
+
+
 class WorkerWrapperBase:
     """
     This class represents one process in an executor/engine. It is responsible
@@ -558,19 +661,58 @@ class WorkerWrapperBase:
             worker_class = resolve_obj_by_qualname(
                 self.vllm_config.parallel_config.worker_cls)
         else:
+            logger.warning(
+                "passing worker_cls as a class object is strongly deprecated,"
+                " as the serialization of class objects can be tricky and"
+                " error-prone. To be safe, please keep the class in a separate"
+                " module and pass the qualified name of the class as a string."
+            )
             assert isinstance(self.vllm_config.parallel_config.worker_cls,
                               bytes)
             worker_class = cloudpickle.loads(
                 self.vllm_config.parallel_config.worker_cls)
+        if self.vllm_config.parallel_config.worker_extension_cls:
+            worker_extension_cls = resolve_obj_by_qualname(
+                self.vllm_config.parallel_config.worker_extension_cls)
+            extended_calls = []
+            if worker_extension_cls not in worker_class.__bases__:
+                # check any conflicts between worker and worker_extension_cls
+                for attr in dir(worker_extension_cls):
+                    if attr.startswith("__"):
+                        continue
+                    assert not hasattr(worker_class, attr), (
+                        f"Worker class {worker_class} already has an attribute"
+                        f" {attr}, which conflicts with the worker"
+                        f" extension class {worker_extension_cls}.")
+                    if callable(getattr(worker_extension_cls, attr)):
+                        extended_calls.append(attr)
+                # dynamically inherit the worker extension class
+                worker_class.__bases__ = worker_class.__bases__ + (
+                    worker_extension_cls, )
+                logger.info(
+                    "Injected %s into %s for extended collective_rpc calls %s",
+                    worker_extension_cls, worker_class, extended_calls)
         with set_current_vllm_config(self.vllm_config):
             # To make vLLM config available during worker initialization
             self.worker = worker_class(**kwargs)
             assert self.worker is not None
 
+    def initialize_from_config(self, kv_cache_configs: List[Any]) -> None:
+        kv_cache_config = kv_cache_configs[self.rpc_rank]
+        self.worker.initialize_from_config(kv_cache_config)  # type: ignore
+
+    def init_device(self):
+        with set_current_vllm_config(self.vllm_config):
+            # To make vLLM config available during device initialization
+            self.worker.init_device()  # type: ignore
+
     def execute_method(self, method: Union[str, bytes], *args, **kwargs):
         try:
-            target = self if self.worker is None else self.worker
-            return run_method(target, method, args, kwargs)
+            # method resolution order:
+            # if a method is defined in this class, it will be called directly.
+            # otherwise, since we define `__getattr__` and redirect attribute
+            # query to `self.worker`, the method will be called on the worker.
+            return run_method(self, method, args, kwargs)
         except Exception as e:
             # if the driver worker also execute methods,
             # exceptions in the rest worker may cause deadlock in rpc like ray
@@ -583,7 +725,6 @@ class WorkerWrapperBase:
 
     def __getattr__(self, attr):
         return getattr(self.worker, attr)
-
 
 def extract_previous_hidden_states(
         data: Union[ExecuteModelRequest, Dict[str, torch.Tensor]]) -> \

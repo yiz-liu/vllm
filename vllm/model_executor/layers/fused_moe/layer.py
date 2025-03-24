@@ -634,12 +634,66 @@ class FusedMoE(torch.nn.Module):
                 renormalize=renormalize)
 
         return topk_weights, topk_ids
+    # 
+    # 
+    # def naive_multicast(self, x: torch.Tensor,
+    #                     cu_tokens_across_dp_cpu: torch.Tensor):
+    #     # 转换为静态参数（确保编译时可见）
+    #     max_tokens = int(cu_tokens_across_dp_cpu[-1].item())  # Python原生int
+    #     hidden_size = x.size(1)
+    #     device = x.device
+    #
+    #     # 创建固定形状的buffer（编译时可见静态shape）
+    #     buffer = torch.empty((max_tokens, hidden_size), device=device, dtype=x.dtype)
+    #
+    #     # 转换为Python原生列表（脱离动态张量追踪）
+    #     cu_tokens_list = cu_tokens_across_dp_cpu.cpu().tolist()
+    #     dp_world_size = get_dp_group().world_size
+    #
+    #     # === 关键修改1：生成静态索引掩码 ===
+    #     # 预先生成所有分片的索引掩码（静态shape: [dp_world_size, max_tokens]）
+    #     index_masks = torch.zeros((dp_world_size, max_tokens),
+    #                               dtype=torch.bool, device=device)
+    #
+    #     start = 0
+    #     for idx in range(dp_world_size):
+    #         end = cu_tokens_list[idx]
+    #         index_masks[idx, start:end] = True  # 静态切片范围（end是Python int）
+    #         start = end
+    #
+    #     # === 关键修改2：掩码索引替代动态切片 ===
+    #     # 本地数据填充
+    #     local_mask = index_masks[self.dp_rank]
+    #     valid_length = local_mask.sum()  # 实际有效长度
+    #     buffer[local_mask] = x.view(-1)[:valid_length].view(-1, hidden_size)
+    #
+    #     # === 关键修改3：掩码广播 ===
+    #     for idx in range(dp_world_size):
+    #         current_mask = index_masks[idx]
+    #         chunk_size = int(cu_tokens_list[idx] - (0 if idx == 0 else cu_tokens_list[idx - 1]))
+    #
+    #         # 创建固定形状的通信buffer（编译时可见）
+    #         comm_buffer = torch.empty((chunk_size, hidden_size),
+    #                                   device=device, dtype=x.dtype)
+    #
+    #         # 掩码提取数据（替代动态切片）
+    #         comm_data = buffer[current_mask]
+    #         comm_buffer[:len(comm_data)] = comm_data  # 动态适配
+    #
+    #         # 执行广播
+    #         get_dp_group().broadcast(comm_buffer, idx)
+    #
+    #         # 掩码写回数据
+    #         buffer[current_mask] = comm_buffer[:valid_length]
+    #
+    #     return buffer
+    #
 
 
     def naive_multicast(self, x: torch.Tensor,
                         cu_tokens_across_dp_cpu: torch.Tensor):
         assert (len(x.shape) == 2)
-        # print(f"-------x.shape:{x.shape};--------cu_tokens_across_dp_cpu.shape:{cu_tokens_across_dp_cpu.shape}")
+        print(f"-------x.shape:{x.shape};--------cu_tokens_across_dp_cpu.shape:{cu_tokens_across_dp_cpu.shape}")
         buffer = torch.empty((cu_tokens_across_dp_cpu[-1], x.size(1)),
                              device=x.device,
                              dtype=x.dtype)
@@ -655,7 +709,28 @@ class FusedMoE(torch.nn.Module):
 
         return buffer
 
-
+    # def naive_multicast(self, x: torch.Tensor, max_num_tokens: int):
+    #     assert (len(x.shape) == 2)
+    #     # print(f"-------x.shape:{x.shape};--------cu_tokens_across_dp_cpu.shape:{cu_tokens_across_dp_cpu.shape}")
+    #     buffer = torch.zeros(
+    #         (self.dp_size, max_num_tokens, x.size(1)),
+    #         device=x.device,
+    #         dtype=x.dtype)
+    #
+    #     buffer[self.dp_rank, :num_tokens, :].copy_(x)
+    #     x = get_dp_group().all_reduce(buffer)
+    #     x = x.view(-1, x.size(-1))
+    #     return x
+    #     # start = 0 if self.dp_rank == 0 else cu_tokens_across_dp_cpu[
+    #     #     self.dp_rank - 1]
+    #     # end = cu_tokens_across_dp_cpu[self.dp_rank]
+    #     # buffer[start:end, :].copy_(x)
+    #     # for idx in range(get_dp_group().world_size):
+    #     #     start = 0 if idx == 0 else cu_tokens_across_dp_cpu[idx - 1]
+    #     #     end = cu_tokens_across_dp_cpu[idx]
+    #     #     get_dp_group().broadcast(buffer[start:end, :], idx)
+    #     #
+    #     # return buffer
 
     def forward(self, hidden_states: torch.Tensor,
                 router_logits: torch.Tensor):
@@ -668,6 +743,11 @@ class FusedMoE(torch.nn.Module):
                                                          cu_tokens_across_dp_cpu)
             router_logits = self.naive_multicast(router_logits,
                                                          cu_tokens_across_dp_cpu)
+            # num_tokens_across_dp = get_forward_context().num_tokens_across_dp
+            # max_num_tokens = max(num_tokens_across_dp)
+            # num_tokens = hidden_states.size(0)
+            # hidden_states = self.naive_multicast(hidden_states,max_num_tokens)
+            # router_logits = self.naive_multicast(router_logits,max_num_tokens)
 
         # Matrix multiply.
         final_hidden_states = self.quant_method.apply(
@@ -686,6 +766,7 @@ class FusedMoE(torch.nn.Module):
             e_score_correction_bias=self.e_score_correction_bias)
 
         if self.dp_size > 1:
+            # # with torchdynamo.disable():
             start = 0 if self.dp_rank == 0 else cu_tokens_across_dp_cpu[
                     self.dp_rank - 1]
             end = cu_tokens_across_dp_cpu[self.dp_rank]
@@ -693,7 +774,12 @@ class FusedMoE(torch.nn.Module):
             all_hidden_states = get_dp_group().all_reduce(final_hidden_states)
             final_hidden_states = all_hidden_states[start:end, :]
 
-
+            # all_hidden_states = get_dp_group().all_reduce(
+            #     final_hidden_states)
+            # all_hidden_states = all_hidden_states.view(
+            #     self.dp_size, -1, all_hidden_states.size(-1))
+            # final_hidden_states = all_hidden_states[
+            #                       self.dp_rank, :num_tokens, :]
 
         # if self.reduce_results and self.tp_size > 1:
         if self.reduce_results and (self.tp_size > 1 or self.ep_size > 1):

@@ -912,12 +912,10 @@ def initialize_model_parallel(
     if config is not None:
         data_parallel_size = config.parallel_config.data_parallel_size
 
-    print("------------------------------------config:", config.parallel_config)
     all_ranks = torch.arange(world_size).reshape(
         data_parallel_size, pipeline_model_parallel_size,
         tensor_model_parallel_size)
 
-    print(f"------------------------tensor_model_parallel_size:{tensor_model_parallel_size};----------------------expert_tensor_parallel_size:{expert_tensor_parallel_size}")
     num_expert_parallel_groups: int = (world_size //
                                        (tensor_model_parallel_size // 
                                         expert_tensor_parallel_size))

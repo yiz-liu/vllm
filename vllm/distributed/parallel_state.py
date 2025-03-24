@@ -916,10 +916,9 @@ def initialize_model_parallel(
         data_parallel_size, pipeline_model_parallel_size,
         tensor_model_parallel_size)
 
-    num_expert_parallel_groups: int = (world_size //
-                                       (tensor_model_parallel_size //
-                                        expert_tensor_parallel_size))
-    num_expert_tensor_parallel_groups: int = (tensor_model_parallel_size //
+
+    num_expert_parallel_groups: int = expert_tensor_parallel_size
+    num_expert_tensor_parallel_groups: int = (world_size //
                                               expert_tensor_parallel_size)
     num_tensor_model_parallel_groups: int = (world_size //
                                              tensor_model_parallel_size)
@@ -932,7 +931,7 @@ def initialize_model_parallel(
     for i in range(num_expert_parallel_groups):
         ranks = list(range(i, world_size, num_expert_parallel_groups))
         group_ranks.append(ranks)
-    print(f"==========================EP group_ranks:{group_ranks}")
+    print(f"==========================EP group_ranks:{group_ranks};")
 
     _EP = init_model_parallel_group(group_ranks,
                                     get_world_group().local_rank,
@@ -943,11 +942,16 @@ def initialize_model_parallel(
     global _ETP
     assert _ETP is None, (
         "expert tensor parallel group is already initialized")
-    for j in range(data_parallel_size):
-        for i in range(num_expert_tensor_parallel_groups):
-            ranks = list(range(i * expert_tensor_parallel_size + j * data_parallel_size,
-                               (i + 1) * expert_tensor_parallel_size + j * data_parallel_size))
-            group_ranks.append(ranks)
+    # for j in range(data_parallel_size):
+    #     for i in range(num_expert_tensor_parallel_groups):
+    #         ranks = list(range(i * expert_tensor_parallel_size + j * data_parallel_size,
+    #                            (i+1) * expert_tensor_parallel_size +j * data_parallel_size))
+    #         group_ranks.append(ranks)
+
+    for i in range(num_expert_tensor_parallel_groups):
+        ranks = list(range(i * expert_tensor_parallel_size,
+                           (i + 1) * expert_tensor_parallel_size))
+        group_ranks.append(ranks)
 
 
     print(f"==========================ETP group_ranks:{group_ranks}")

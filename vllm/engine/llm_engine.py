@@ -230,6 +230,24 @@ class LLMEngine:
         self.prompt_adapter_config = vllm_config.prompt_adapter_config  # noqa
         self.observability_config = vllm_config.observability_config or ObservabilityConfig(  # noqa
         )
+        self.dp_enabled = self.parallel_config.data_parallel_size > 1  # noqa
+        self.should_execute_dummy_batch = False
+        if self.dp_enabled:
+            self.dp_group = self.parallel_config.stateless_init_dp_group()
+
+        def new_has_unfinished_requests(self) -> bool:
+            has_unfinished = any(scheduler.has_unfinished_seqs()
+                                 for scheduler in self.scheduler)
+            if not self.dp_enabled:
+                return has_unfinished
+            return new_has_unfinished_requests_dp(self, has_unfinished)
+
+        def new_has_unfinished_requests_dp(self, has_unfinished: bool) -> bool:
+            aggregated_has_unfinished = ParallelConfig.has_unfinished_dp(
+                self.dp_group, has_unfinished)
+            if not has_unfinished and aggregated_has_unfinished:
+                self.should_execute_dummy_batch = True
+            return aggregated_has_unfinished
 
         logger.info(
             "Initializing a V0 LLM engine (v%s) with config: %s, "

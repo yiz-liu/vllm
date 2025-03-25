@@ -186,7 +186,6 @@ class GroupCoordinator:
                 self.rank_in_group = ranks.index(self.rank)
                 self.device_group = device_group
                 self.cpu_group = cpu_group
-
         assert self.cpu_group is not None
         assert self.device_group is not None
 
@@ -738,8 +737,6 @@ def init_model_parallel_group(
 
 
 _TP: Optional[GroupCoordinator] = None
-
-
 def get_tp_group() -> GroupCoordinator:
     assert _TP is not None, ("tensor model parallel group is not initialized")
     return _TP
@@ -748,9 +745,13 @@ def get_tp_group() -> GroupCoordinator:
 # kept for backward compatibility
 get_tensor_model_parallel_group = get_tp_group
 
+_DP: Optional[GroupCoordinator] = None
+def get_dp_group() -> GroupCoordinator:
+    assert _DP is not None, ("data parallel group is not initialized")
+    return _DP
+
+
 _PP: Optional[GroupCoordinator] = None
-
-
 def get_pp_group() -> GroupCoordinator:
     assert _PP is not None, (
         "pipeline model parallel group is not initialized")
@@ -811,6 +812,24 @@ def init_distributed_environment(
         "world_size=%d rank=%d local_rank=%d "
         "distributed_init_method=%s backend=%s", world_size, rank, local_rank,
         distributed_init_method, backend)
+
+    from vllm.config import get_current_vllm_config
+    config = get_current_vllm_config()
+    if config is not None and config.parallel_config.data_parallel_size > 1:
+        parallel_config = config.parallel_config
+        # adjust to take into account data parallelism
+        # offset the rank by the data parallel rank
+        rank = parallel_config.data_parallel_rank * world_size + rank
+        # adjust the world size to take into account data parallelism
+        world_size = parallel_config.world_size_across_dp
+        ip = parallel_config.data_parallel_master_ip
+        port = parallel_config.get_next_dp_init_port()
+        distributed_init_method = f"tcp://{ip}:{port}"  # noqa
+        logger.info(
+            "Adjusting world_size=%d rank=%d distributed_init_method=%s for DP",
+            world_size, rank, distributed_init_method)
+
+
     if not torch.distributed.is_initialized():
         assert distributed_init_method is not None, (
             "distributed_init_method must be provided when initializing "
@@ -882,11 +901,33 @@ def initialize_model_parallel(
     # Get world size and rank. Ensure some consistencies.
     assert torch.distributed.is_initialized()
     world_size: int = torch.distributed.get_world_size()
+    rank = torch.distributed.get_rank()
     backend = backend or torch.distributed.get_backend(
         get_world_group().device_group)
+    data_parallel_size = 1
+    from vllm.config import get_current_vllm_config
+    config = get_current_vllm_config()
+
+
+    if config is not None:
+        data_parallel_size = config.parallel_config.data_parallel_size
+
+    all_ranks = torch.arange(world_size).reshape(
+        data_parallel_size, pipeline_model_parallel_size,
+        tensor_model_parallel_size)
+
+
+    num_expert_parallel_groups: int = expert_tensor_parallel_size
+    num_expert_tensor_parallel_groups: int = (world_size //
+                                              expert_tensor_parallel_size)
+    num_tensor_model_parallel_groups: int = (world_size //
+                                             tensor_model_parallel_size)
+
+
 
     num_expert_parallel_groups: int = expert_tensor_parallel_size
     num_expert_tensor_parallel_groups: int = world_size // expert_tensor_parallel_size
+
 
     global _EP
     assert _EP is None, ("expert parallel group is already initialized")
@@ -904,19 +945,25 @@ def initialize_model_parallel(
     global _ETP
     assert _ETP is None, (
         "expert tensor parallel group is already initialized")
+    # for j in range(data_parallel_size):
+    #     for i in range(num_expert_tensor_parallel_groups):
+    #         ranks = list(range(i * expert_tensor_parallel_size + j * data_parallel_size,
+    #                            (i+1) * expert_tensor_parallel_size +j * data_parallel_size))
+    #         group_ranks.append(ranks)
+
     for i in range(num_expert_tensor_parallel_groups):
         ranks = list(range(i * expert_tensor_parallel_size,
                            (i + 1) * expert_tensor_parallel_size))
         group_ranks.append(ranks)
+
+
 
     _ETP = init_model_parallel_group(group_ranks,
                                      get_world_group().local_rank,
                                      backend,
                                      group_name="etp")
 
-    # Build the tensor model-parallel groups.
-    num_tensor_model_parallel_groups: int = (world_size //
-                                             tensor_model_parallel_size)
+
     global _TP
     assert _TP is None, ("tensor model parallel group is already initialized")
     group_ranks = []
@@ -949,6 +996,22 @@ def initialize_model_parallel(
                                     backend,
                                     group_name="pp")
 
+    global _DP
+    assert _DP is None, ("data parallel group is already initialized")
+    group_ranks = all_ranks.transpose(0,
+                                      2).reshape(-1,
+                                                 data_parallel_size).unbind(0)
+    group_ranks = [x.tolist() for x in group_ranks]
+
+    _DP = init_model_parallel_group(group_ranks,
+                                    get_world_group().local_rank,
+                                    backend,
+                                    group_name="dp")
+
+    logger.info(
+        "rank %s in world size %s is assigned as "
+        "DP rank %s, PP rank %s, TP rank %s, EP rank %s, ETP rank %s", rank, world_size,
+        _DP.rank_in_group, _PP.rank_in_group, _TP.rank_in_group, _EP.rank_in_group, _ETP.rank_in_group)
 
 def ensure_kv_transfer_initialized(vllm_config: "VllmConfig") -> None:
     """
@@ -1054,6 +1117,21 @@ def destroy_model_parallel():
     if _PP:
         _PP.destroy()
     _PP = None
+
+    global _DP
+    if _DP:
+        _DP.destroy()
+    _DP = None
+
+    global _EP
+    if _EP:
+        _EP.destroy()
+    _EP = None
+
+    global _ETP
+    if _ETP:
+        _ETP.destroy()
+    _ETP = None
 
 
 def destroy_distributed_environment():

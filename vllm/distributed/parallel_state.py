@@ -908,6 +908,7 @@ def initialize_model_parallel(
     from vllm.config import get_current_vllm_config
     config = get_current_vllm_config()
 
+
     if config is not None:
         data_parallel_size = config.parallel_config.data_parallel_size
 
@@ -922,6 +923,10 @@ def initialize_model_parallel(
     num_tensor_model_parallel_groups: int = (world_size //
                                              tensor_model_parallel_size)
 
+
+
+    num_expert_parallel_groups: int = expert_tensor_parallel_size
+    num_expert_tensor_parallel_groups: int = world_size // expert_tensor_parallel_size
 
 
     global _EP

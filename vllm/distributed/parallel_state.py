@@ -186,7 +186,6 @@ class GroupCoordinator:
                 self.rank_in_group = ranks.index(self.rank)
                 self.device_group = device_group
                 self.cpu_group = cpu_group
-        print(f"--------------------group_ranks:{group_ranks},---------------------self.rank:{self.rank}")
         assert self.cpu_group is not None
         assert self.device_group is not None
 
@@ -931,7 +930,6 @@ def initialize_model_parallel(
     for i in range(num_expert_parallel_groups):
         ranks = list(range(i, world_size, num_expert_parallel_groups))
         group_ranks.append(ranks)
-    print(f"==========================EP group_ranks:{group_ranks};")
 
     _EP = init_model_parallel_group(group_ranks,
                                     get_world_group().local_rank,
@@ -954,7 +952,7 @@ def initialize_model_parallel(
         group_ranks.append(ranks)
 
 
-    print(f"==========================ETP group_ranks:{group_ranks}")
+
     _ETP = init_model_parallel_group(group_ranks,
                                      get_world_group().local_rank,
                                      backend,
@@ -969,7 +967,7 @@ def initialize_model_parallel(
             range(i * tensor_model_parallel_size,
                   (i + 1) * tensor_model_parallel_size))
         group_ranks.append(ranks)
-    print(f"==========================TP group_ranks:{group_ranks}")
+
     # message queue broadcaster is only used in tensor model parallel group
     _TP = init_model_parallel_group(group_ranks,
                                     get_world_group().local_rank,
@@ -999,7 +997,7 @@ def initialize_model_parallel(
                                       2).reshape(-1,
                                                  data_parallel_size).unbind(0)
     group_ranks = [x.tolist() for x in group_ranks]
-    print(f"==========================DP group_ranks:{group_ranks}")
+
     _DP = init_model_parallel_group(group_ranks,
                                     get_world_group().local_rank,
                                     backend,

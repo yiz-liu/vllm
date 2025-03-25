@@ -1352,8 +1352,7 @@ class ParallelConfig:
 
         from vllm.distributed.utils import (
             stateless_init_torch_distributed_process_group)
-        print("==============================config using hccl backend===================================")
-        # use gloo since the engine process might not have cuda device
+
         dp_group = stateless_init_torch_distributed_process_group(
             self.data_parallel_master_ip,
             self.get_next_dp_init_port(),
@@ -3518,7 +3517,7 @@ def set_current_vllm_config(vllm_config: VllmConfig, check_compile=False):
     can access the VLLM config to determine how to dispatch.
     """
     global _current_vllm_config
-    logger.info("================================================================Setting VLLM config: %s", vllm_config)
+
     old_vllm_config = _current_vllm_config
     from vllm.compilation.counter import compilation_counter
     num_models_seen = compilation_counter.num_models_seen
@@ -3551,7 +3550,6 @@ def get_current_vllm_config() -> VllmConfig:
         # in ci, usually when we test custom ops/modules directly,
         # we don't set the vllm config. In that case, we set a default
         # config.
-        print("88888888888888888888888888888888888888888888888888888888")
         logger.warning("Current VLLM config is not set.")
         from vllm.config import VllmConfig
         return VllmConfig()

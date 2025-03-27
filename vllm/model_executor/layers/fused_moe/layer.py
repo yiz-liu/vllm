@@ -282,10 +282,8 @@ class FusedMoE(torch.nn.Module):
         if params_dtype is None:
             params_dtype = torch.get_default_dtype()
 
-        # self.tp_size = (tp_size if tp_size is not None else
-        #                 get_tensor_model_parallel_world_size())
         self.ep_size = get_ep_group().world_size
-        self.tp_size = get_tensor_model_parallel_world_size() if self.ep_size == 1 else get_etp_group().world_size
+        self.tp_size = get_etp_group().world_size
         self.dp_size = (dp_size
                         if dp_size is not None else get_dp_group().world_size)
         self.dp_rank = (0

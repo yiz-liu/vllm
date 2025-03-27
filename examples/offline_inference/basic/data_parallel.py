@@ -25,8 +25,7 @@ def main(dp_size, dp_rank, dp_master_ip, dp_master_port, tp_size):
         "The president of the United States is",
         "The capital of France is",
         "The future of AI is",
-    ]*4
-
+    ] * 16
 
     promts_per_rank = len(prompts) // dp_size
     start = dp_rank * promts_per_rank
@@ -37,25 +36,21 @@ def main(dp_size, dp_rank, dp_master_ip, dp_master_port, tp_size):
     print(f"DP rank {dp_rank} needs to process {len(prompts)} prompts")
 
 
-    sampling_params = SamplingParams(temperature=0.8,
-                                     top_p=0.95,
-                                     max_tokens= 4,
-                                     min_tokens = 4)
-    # Create an LLM.
-    llm = LLM(model="deepseek-ai/DeepSeek-V2-Lite-Chat",
-              tensor_parallel_size=tp_size,
-              trust_remote_code=True,
-              expert_tensor_parallel_size = 1,
-              max_model_len=4096,
-              enforce_eager=True)
+    sampling_params = SamplingParams(temperature=0, min_tokens=16, max_tokens=16)
 
-    # llm = LLM(model="deepseek-ai/DeepSeek-V2-Lite-Chat",
-    #           tensor_parallel_size=tp_size,
-    #           expert_tensor_parallel_size = tp_size,
-    #           trust_remote_code=True,
-    #           max_model_len=4096,
-    #           enforce_eager=False,
-    #           compilation_config=1)
+    # Create an LLM.
+    llm = LLM(
+        model="/home/data/dsv3_w8a8",
+        tensor_parallel_size=tp_size,
+        trust_remote_code=True,
+        expert_tensor_parallel_size = 1,
+        max_model_len=4096,
+        enforce_eager=True,
+        max_num_seqs=64,
+        load_format="dummy"
+        # enforce_eager=False,
+        # compilation_config=1,
+    )
 
     outputs = llm.generate(prompts, sampling_params)
     for output in outputs:
@@ -77,8 +72,8 @@ if __name__ == "__main__":
     dp_master_port = 29500
     procs = []
 
-    TP_size = 2
-    DP_size = 2
+    TP_size = 16
+    DP_size = 1
     for i in range(DP_size):
         proc = Process(target=main,
                        args=(DP_size, i, dp_master_ip, dp_master_port,
@@ -87,5 +82,3 @@ if __name__ == "__main__":
         procs.append(proc)
     for proc in procs:
         proc.join()
-
-

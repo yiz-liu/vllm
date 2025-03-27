@@ -23,6 +23,7 @@ If you only need to use the distributed environment without model/pipeline
 """
 import contextlib
 import gc
+import os
 import pickle
 import weakref
 from collections import namedtuple
@@ -824,9 +825,10 @@ def init_distributed_environment(
         world_size = parallel_config.world_size_across_dp
         ip = parallel_config.data_parallel_master_ip
         port = parallel_config.get_next_dp_init_port()
-        import os
-        if 'MASTER_PORT' in os.environ:
-            port = os.environ['MASTER_PORT']
+
+        # NOTE: Get port from envs directly when using torchrun
+        port = os.environ.get("MASTER_PORT", port)
+
         distributed_init_method = f"tcp://{ip}:{port}"  # noqa
         logger.info(
             "Adjusting world_size=%d rank=%d distributed_init_method=%s for DP",

@@ -2,9 +2,11 @@
 
 from abc import abstractmethod
 from enum import Enum
+import os
 from typing import Callable, List, Optional, Tuple
 
 import torch
+import torch.distributed as dist
 import torch._dynamo as torchdynamo
 from torch.nn.parameter import UninitializedParameter
 from vllm import envs
@@ -676,19 +678,18 @@ class FusedMoE(torch.nn.Module):
                 router_logits: torch.Tensor,
                 top_k = None):
         assert self.quant_method is not None
-                  
+
         if top_k:
             real_top_k = top_k
         else:
             real_top_k = self.top_k
-          
+
         if self.dp_size > 1:
-            cu_tokens_across_dp_cpu = get_forward_context(
-            ).dp_metadata.cu_tokens_across_dp_cpu
-            hidden_states = self.naive_multicast(hidden_states,
-                                                         cu_tokens_across_dp_cpu)
-            router_logits = self.naive_multicast(router_logits,
-                                                         cu_tokens_across_dp_cpu)
+            if os.environ.get("VLLM_ENABLE_MC2") == 1:
+                ...
+            else:
+                hidden_states = get_dp_group().all_gather(hidden_states, 0)
+                router_logits = get_dp_group().all_gather(router_logits, 0)
 
         # Matrix multiply.
         final_hidden_states = self.quant_method.apply(
@@ -707,15 +708,16 @@ class FusedMoE(torch.nn.Module):
             e_score_correction_bias=self.e_score_correction_bias)
 
         if self.dp_size > 1:
-            start = 0 if self.dp_rank == 0 else cu_tokens_across_dp_cpu[
-                    self.dp_rank - 1]
-            end = cu_tokens_across_dp_cpu[self.dp_rank]
+            if os.environ.get("VLLM_ENABLE_MC2") == 1:
+                ...
+            else:
+                final_hidden_states = dist._functional_collectives.reduce_scatter_tensor(
+                    final_hidden_states,
+                    "sum",
+                    scatter_dim=0,
+                    group=get_dp_group().device_group
+                )
 
-            all_hidden_states = get_dp_group().all_reduce(final_hidden_states)
-            final_hidden_states = all_hidden_states[start:end, :]
-
-
-        # if self.reduce_results and self.tp_size > 1:
         if self.reduce_results and (self.tp_size > 1 or self.ep_size > 1):
             final_hidden_states = tensor_model_parallel_all_reduce(
                 final_hidden_states)

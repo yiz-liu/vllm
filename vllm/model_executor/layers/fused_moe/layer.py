@@ -147,6 +147,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         expert_map: Optional[torch.tensor] = None,
         topk_group: Optional[int] = None,
         num_expert_group: Optional[int] = None,
+        is_prefill: bool = True,
         custom_routing_function: Optional[Callable] = None,
         scoring_func: str = "softmax",
         e_score_correction_bias: Optional[torch.Tensor] = None
@@ -159,8 +160,9 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
                             use_grouped_topk=use_grouped_topk,
                             topk_group=topk_group,
                             num_expert_group=num_expert_group,
-                            global_num_experts = global_num_experts,
-                            expert_map = expert_map,
+                            global_num_experts=global_num_experts,
+                            expert_map=expert_map,
+                            is_prefill=is_prefill,
                             custom_routing_function=custom_routing_function,
                             scoring_func=scoring_func,
                             e_score_correction_bias=e_score_correction_bias)
@@ -560,7 +562,7 @@ class FusedMoE(torch.nn.Module):
             return
 
         # Case weight scales and zero_points
-        if ("scale" in weight_name or "zero" in weight_name):
+        if ("scale" in weight_name or "zero" in weight_name or "offset" in weight_name):
             # load the weight scales and zp based on the quantization scheme
             # supported weight scales/zp can be found in
             # FusedMoeWeightScaleSupported
@@ -676,7 +678,8 @@ class FusedMoE(torch.nn.Module):
 
     def forward(self, hidden_states: torch.Tensor,
                 router_logits: torch.Tensor,
-                top_k = None):
+                is_prefill: bool,
+                top_k = None,):
         assert self.quant_method is not None
 
         if top_k:
@@ -703,6 +706,7 @@ class FusedMoE(torch.nn.Module):
             expert_map=self.expert_map,
             topk_group=self.topk_group,
             num_expert_group=self.num_expert_group,
+            is_prefill=is_prefill,
             custom_routing_function=self.custom_routing_function,
             scoring_func=self.scoring_func,
             e_score_correction_bias=self.e_score_correction_bias)

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import itertools
+import os
 from abc import abstractmethod
 from typing import Optional
 
@@ -1057,6 +1058,7 @@ class RowParallelLinear(LinearBase):
 
         self.input_is_parallel = input_is_parallel
         self.reduce_results = reduce_results
+        self.enable_mc2 = os.environ.get("VLLM_ENABLE_MC2") == "1"
 
         assert self.quant_method is not None
         self.quant_method.create_weights(
@@ -1132,7 +1134,7 @@ class RowParallelLinear(LinearBase):
 
         param.load_row_parallel_weight(loaded_weight=loaded_weight)
 
-    def forward(self, input_) -> tuple[torch.Tensor, Optional[Parameter]]:
+    def forward(self, input_, is_prefill=True) -> tuple[torch.Tensor, Optional[Parameter]]:
         if self.input_is_parallel:
             input_parallel = input_
         else:
@@ -1150,7 +1152,11 @@ class RowParallelLinear(LinearBase):
                                                   input_parallel,
                                                   bias=bias_)
         if self.reduce_results and self.tp_size > 1:
-            output = tensor_model_parallel_all_reduce(output_parallel)
+            if is_prefill or not self.enable_mc2:
+                output = tensor_model_parallel_all_reduce(output_parallel)
+            else:
+                # TODO: Maybe place the reduce_scatter here?
+                output = output_parallel
         else:
             output = output_parallel
 

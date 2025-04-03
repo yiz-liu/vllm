@@ -1058,7 +1058,7 @@ class RowParallelLinear(LinearBase):
 
         self.input_is_parallel = input_is_parallel
         self.reduce_results = reduce_results
-        self.enable_mc2 = os.environ.get("VLLM_ENABLE_MC2") == "1"
+        self.enable_mc2 = int(os.environ.get("VLLM_ENABLE_MC2")) == 1
 
         assert self.quant_method is not None
         self.quant_method.create_weights(
@@ -1152,11 +1152,12 @@ class RowParallelLinear(LinearBase):
                                                   input_parallel,
                                                   bias=bias_)
         if self.reduce_results and self.tp_size > 1:
-            if is_prefill or not self.enable_mc2:
-                output = tensor_model_parallel_all_reduce(output_parallel)
-            else:
-                # TODO: Maybe place the reduce_scatter here?
-                output = output_parallel
+            output = tensor_model_parallel_all_reduce(output_parallel)
+            # if is_prefill or not self.enable_mc2:
+            #     output = tensor_model_parallel_all_reduce(output_parallel)
+            # else:
+            #     # TODO: Maybe place the reduce_scatter here?
+            #     output = output_parallel
         else:
             output = output_parallel
 

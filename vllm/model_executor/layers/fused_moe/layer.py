@@ -688,7 +688,7 @@ class FusedMoE(torch.nn.Module):
             real_top_k = self.top_k
 
         if self.dp_size > 1:
-            if os.environ.get("VLLM_ENABLE_MC2") == 1:
+            if int(os.environ.get("VLLM_ENABLE_MC2")) == 1 and not is_prefill:
                 ...
             else:
                 hidden_states = get_dp_group().all_gather(hidden_states, 0)
@@ -712,7 +712,7 @@ class FusedMoE(torch.nn.Module):
             e_score_correction_bias=self.e_score_correction_bias)
 
         if self.dp_size > 1:
-            if os.environ.get("VLLM_ENABLE_MC2") == 1:
+            if int(os.environ.get("VLLM_ENABLE_MC2")) == 1 and not is_prefill:
                 ...
             else:
                 final_hidden_states = dist._functional_collectives.reduce_scatter_tensor(

@@ -163,6 +163,11 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="FastAPI root_path when app is behind a path based routing proxy")
+    parser.add_argument('--expert-tensor-parallel-size',
+                            '-etp',
+                            type=int,
+                            default=1,
+                            help='Number of etp parallel replicas.')
     parser.add_argument("--log-level", type=str, default="debug")
     parser = AsyncEngineArgs.add_cli_args(parser)
     args = parser.parse_args()

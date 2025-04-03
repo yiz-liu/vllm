@@ -424,6 +424,11 @@ class EngineArgs:
                             type=int,
                             default=EngineArgs.tensor_parallel_size,
                             help='Number of tensor parallel replicas.')
+        parser.add_argument('--expert-tensor-parallel-size',
+                            '-etp',
+                            type=int,
+                            default=EngineArgs.expert_tensor_parallel_size,
+                            help='Number of etp parallel replicas.')
         parser.add_argument(
             '--max-parallel-loading-workers',
             type=int,

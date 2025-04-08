@@ -690,6 +690,9 @@ class FusedMoE(torch.nn.Module):
         if self.dp_size > 1:
             if int(os.environ.get("VLLM_ENABLE_MC2")) == 1 and not is_prefill:
                 ...
+            elif int(os.environ.get("USING_LCCL_COM"))  == 1:
+                hidden_states = get_dp_group().all_gather(hidden_states, 0, False)
+                router_logits = get_dp_group().all_gather(router_logits, 0, False)
             else:
                 hidden_states = get_dp_group().all_gather(hidden_states, 0)
                 router_logits = get_dp_group().all_gather(router_logits, 0)

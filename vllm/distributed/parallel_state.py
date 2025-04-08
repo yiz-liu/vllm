@@ -312,7 +312,7 @@ class GroupCoordinator:
     def _all_reduce_out_place(self, input_: torch.Tensor) -> torch.Tensor:
         return self.device_communicator.all_reduce(input_)
 
-    def all_gather(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
+    def all_gather(self, input_: torch.Tensor, dim: int = -1, is_lccl: bool = True) -> torch.Tensor:
         world_size = self.world_size
         # Bypass the function if we are using only 1 GPU.
         if world_size == 1:
@@ -320,7 +320,10 @@ class GroupCoordinator:
         assert -input_.dim() <= dim < input_.dim(), (
             f"Invalid dim ({dim}) for input tensor with shape {input_.size()}")
 
-        return self.device_communicator.all_gather(input_, dim)
+        if int(os.environ.get("USING_LCCL_COM"))  == 1:
+            return self.device_communicator.all_gather(input_, dim, is_lccl)
+        else:
+            return self.device_communicator.all_gather(input_, dim)
 
     def gather(self,
                input_: torch.Tensor,
@@ -1012,6 +1015,9 @@ def initialize_model_parallel(
                                     get_world_group().local_rank,
                                     backend,
                                     group_name="dp")
+
+    if  _TP.device_communicator is not None:
+        _TP.device_communicator.unique_name += f"DP_RANK_{_DP.rank_in_group}"
 
     logger.info(
         "rank %s in world size %s is assigned as "

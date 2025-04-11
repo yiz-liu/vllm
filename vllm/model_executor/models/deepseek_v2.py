@@ -33,14 +33,16 @@ from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, ModelConfig, VllmConfig
 from vllm.distributed import (get_pp_group,
                               get_tensor_model_parallel_world_size,
-                              tensor_model_parallel_all_reduce)
+                              tensor_model_parallel_all_reduce,
+                              tensor_model_parallel_all_gather)
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.fused_moe import FusedMoE
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                MergedColumnParallelLinear,
                                                ReplicatedLinear,
-                                               RowParallelLinear)
+                                               RowParallelLinear,
+                                               UnquantizedLinearMethod)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.rotary_embedding import get_rope
@@ -56,6 +58,22 @@ from .interfaces import SupportsPP
 from .utils import (PPMissingLayer, is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
+
+import os
+import torchair
+import torchair._contrib.custom_torch_ops  # noqa
+from torchair.configs.compiler_config import CompilerConfig
+import torch_npu
+
+
+def torch_compile_graph(func):
+    compiler_config = CompilerConfig()
+    compiler_config.experimental_config.tiling_schedule_optimize = True
+    npu_backend = torchair.get_npu_backend(compiler_config=compiler_config)
+    func = torch.compile(func, dynamic=False, backend=npu_backend)
+    return func
+if int(os.getenv("USE_NPU_DEQUANT_SWIGLU_QUANT", "0")) == 1:
+    model_swiglu = torch_compile_graph(torch.ops.npu_inference.npu_dequant_swiglu_quant)
 
 
 class DeepseekV2MLP(nn.Module):
@@ -85,8 +103,41 @@ class DeepseekV2MLP(nn.Module):
             raise ValueError(f"Unsupported activation: {hidden_act}. "
                              "Only silu is supported for now.")
         self.act_fn = SiluAndMul()
+        self.is_quant_mode = not isinstance(self.gate_up_proj.quant_method, UnquantizedLinearMethod)
 
     def forward(self, x, *args):
+        if self.is_quant_mode and int(os.getenv("USE_NPU_DEQUANT_SWIGLU_QUANT", "0")) == 1:
+            quant_out, dynamic_scale = torch_npu.npu_dynamic_quant(x)
+            x1 = torch_npu.npu_quant_matmul(
+                quant_out,
+                self.gate_up_proj.weight,
+                self.gate_up_proj.weight_scale,
+                output_dtype=torch.int32,
+            )
+            if self.gate_up_proj.gather_output:
+                x1 = tensor_model_parallel_all_gather(x1)
+            quant_scale = torch.ones((1, x1.size(1) //2), dtype=torch.float32, device=x.device)
+            quant_out2, dynamic_scale2 = model_swiglu(
+                x=x1,
+                weight_scale=self.gate_up_proj.weight_scale,
+                activate_scale=dynamic_scale,
+                bias=None,
+                quant_scale=quant_scale,
+                quant_offset=None,
+                group_index=None,
+                activate_left=True,
+                quant_mode=1
+            )
+            x3 = torch_npu.npu_quant_matmul(
+                quant_out2,
+                self.down_proj.weight,
+                self.down_proj.weight_scale,
+                pertoken_scale=dynamic_scale2,
+                output_dtype=torch.bfloat16,
+            )
+            if self.down_proj.reduce_results and self.down_proj.tp_size > 1:
+                x3 = tensor_model_parallel_all_reduce(x3)
+            return x3
         gate_up, _ = self.gate_up_proj(x)
         x = self.act_fn(gate_up)
         x, _ = self.down_proj(x)

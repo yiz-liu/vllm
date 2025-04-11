@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import copy
 import time
 from collections import Counter as collectionsCounter
@@ -60,6 +61,8 @@ from vllm.usage.usage_lib import (UsageContext, is_usage_stats_enabled,
 from vllm.utils import (Counter, Device, deprecate_kwargs,
                         resolve_obj_by_qualname, weak_bind)
 from vllm.version import __version__ as VLLM_VERSION
+from vllm.global_timer import timer
+
 
 logger = init_logger(__name__)
 _LOCAL_LOGGING_INTERVAL_SEC = 5
@@ -1353,6 +1356,10 @@ class LLMEngine:
         # This ensures that the scheduler is only called again when the current
         # batch has completed.
         if not self._has_remaining_steps(seq_group_metadata_list):
+            # --------------------- 打点 ---------------------
+            if os.getenv("VLLM_PROF", "False").lower() == "true":
+                timer.end("framework")
+                timer.start("schedule")
             # Schedule iteration
             (seq_group_metadata_list, scheduler_outputs,
              allow_async_output_proc
@@ -1390,6 +1397,10 @@ class LLMEngine:
             last_sampled_token_ids = \
                 self._get_last_sampled_token_ids(virtual_engine)
 
+            # --------------------- 打点 ---------------------
+            if os.getenv("VLLM_PROF", "False").lower() == "true":
+                timer.end("schedule")
+                timer.start("prepare_model_input")
             execute_model_req = ExecuteModelRequest(
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,

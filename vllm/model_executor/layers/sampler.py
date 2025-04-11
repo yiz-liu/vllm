@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """A layer that samples the next tokens from the model's outputs."""
+import os
 import itertools
 import warnings
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from typing import Dict, Iterator, List, Optional, Tuple, Union
 import msgspec
 import torch
 import torch.nn as nn
+import torch_npu
 
 import vllm.envs as envs
 from vllm.model_executor.layers.utils import apply_penalties
@@ -21,6 +23,8 @@ from vllm.sequence import (VLLM_INVALID_TOKEN_ID,
                            CompletionSequenceGroupOutput, Logprob,
                            PromptLogprobs, SampleLogprobs, SequenceOutput)
 from vllm.spec_decode.metrics import SpecDecodeWorkerMetrics
+from vllm.global_timer import timer
+
 
 if envs.VLLM_USE_FLASHINFER_SAMPLER and find_spec("flashinfer"):
     import flashinfer.sampling
@@ -758,6 +762,12 @@ def _sample_with_torch(
 
         else:
             raise ValueError(f"Unsupported sampling type: {sampling_type}")
+
+    # --------------------- 打点 ---------------------
+    if os.getenv("VLLM_PROF", "False").lower() == "true":
+        torch_npu.npu.synchronize()
+        timer.end("model_inference+sample_tokens")
+        timer.start("framework")
 
     # Encapsulate arguments for computing Pythonized sampler
     # results, whether deferred or otherwise.

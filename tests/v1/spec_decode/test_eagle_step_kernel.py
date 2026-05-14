@@ -28,7 +28,10 @@ def _reference_eagle_step_slot_mapping(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Python reference for eagle_step_update_slot_mapping_and_metadata."""
     new_positions = positions_1d + 1
-    exceeds_max = new_positions >= max_model_len
+    block_table_max_position = block_table_tensor.shape[1] * block_size
+    exceeds_max = (new_positions >= max_model_len) | (
+        new_positions >= block_table_max_position
+    )
     clamped_positions = torch.where(
         exceeds_max, torch.zeros_like(positions_1d), new_positions
     )
@@ -46,6 +49,28 @@ def _reference_eagle_step_slot_mapping(
     new_seq_lens = torch.where(exceeds_max, torch.ones_like(seq_lens), seq_lens + 1)
     new_seq_lens = new_seq_lens.clamp(max=max_model_len)
     return clamped_positions, slot_mapping, new_seq_lens
+
+
+def test_reference_masks_when_position_exceeds_block_table_capacity():
+    """Document expected behavior when block table is shorter than max_model_len."""
+    device = torch.device(DEVICE_TYPE)
+    block_size = 16
+    max_model_len = 128
+    positions_1d = torch.tensor([31], dtype=torch.int64, device=device)
+    block_table_tensor = torch.tensor([[0, 1]], dtype=torch.int32, device=device)
+    seq_lens = torch.tensor([32], dtype=torch.int32, device=device)
+
+    clamped_positions, slot_mapping, new_seq_lens = _reference_eagle_step_slot_mapping(
+        positions_1d,
+        block_table_tensor,
+        seq_lens,
+        block_size,
+        max_model_len,
+    )
+
+    assert clamped_positions.item() == 0
+    assert slot_mapping.item() == PADDING_SLOT_ID
+    assert new_seq_lens.item() == 1
 
 
 def test_eagle_step_slot_mapping_kernel():

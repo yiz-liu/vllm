@@ -48,7 +48,10 @@ def eagle_step_slot_mapping_metadata_kernel(
     new_position = position + 1
 
     # Check bounds and compute clamped position
-    exceeds_max = new_position >= max_model_len
+    block_table_max_position = n_blocks_per_req * block_size
+    exceeds_max = (new_position >= max_model_len) | (
+        new_position >= block_table_max_position
+    )
     clamped_position = tl.where(exceeds_max, 0, new_position)
 
     # Block table lookup: block_number = position // block_size
@@ -242,16 +245,23 @@ def compute_new_slot_mapping(
     )
     # Clamp the positions to prevent an out-of-bounds error when indexing
     # into block_table_tensor.
-    clamped_positions = torch.clamp(new_positions, max=max_model_len - 1)
+    max_block_table_len = n_blocks_per_req * block_size
+    clamped_positions = torch.clamp(
+        new_positions, max=min(max_model_len, max_block_table_len) - 1
+    )
     block_table_indices = (
         req_indices * n_blocks_per_req + clamped_positions // block_size
     )
     block_nums = cad.block_table_tensor.view(-1)[block_table_indices]
     block_offsets = clamped_positions % block_size
     new_slot_mapping = block_nums * block_size + block_offsets
-    # Mask out the position ids that exceed the max model length.
+    # Mask out the position ids that exceed the max model length or the
+    # current block table capacity.
     exceeds_max_model_len = new_positions >= max_model_len
-    new_slot_mapping.masked_fill_(exceeds_max_model_len, PADDING_SLOT_ID)
+    exceeds_block_table_len = new_positions >= max_block_table_len
+    new_slot_mapping.masked_fill_(
+        exceeds_max_model_len | exceeds_block_table_len, PADDING_SLOT_ID
+    )
     # Mask out rejected tokens to prevent saves to the KV cache.
     new_slot_mapping.masked_fill_(is_rejected_token_mask, PADDING_SLOT_ID)
     return new_slot_mapping

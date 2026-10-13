@@ -8,7 +8,14 @@ from unittest.mock import Mock
 import pytest
 import torch
 
-from vllm.config.compilation import CUDAGraphMode
+from vllm.config import (
+    CompilationConfig,
+    DeviceConfig,
+    ModelConfig,
+    SpeculativeConfig,
+    VllmConfig,
+)
+from vllm.config.compilation import CompilationMode, CUDAGraphMode
 from vllm.model_executor.models import supports_multimodal_embeddings
 from vllm.model_executor.models.exaone4_5_mtp import Exaone4_5_MTP
 from vllm.model_executor.models.llama4_eagle import EagleLlama4ForCausalLM
@@ -70,6 +77,56 @@ class _TextOnlyDraftModel(torch.nn.Module):
         is_multimodal=None,
     ):
         raise AssertionError("embed_input_ids should not be called during loading")
+
+
+@pytest.mark.parametrize("enforce_eager", [True, False, None])
+def test_draft_compilation_config_respects_enforce_eager(
+    monkeypatch: pytest.MonkeyPatch, enforce_eager: bool | None
+):
+    config = VllmConfig(device_config=DeviceConfig(device="cpu"))
+    config.model_config = Mock(
+        spec=ModelConfig,
+        max_model_len=32,
+        dtype=torch.float32,
+        use_fp64_gumbel=False,
+    )
+    config.scheduler_config.max_num_seqs = 8
+    config.scheduler_config.max_num_batched_tokens = 24
+    config.speculative_config = SpeculativeConfig(
+        method="ngram", num_speculative_tokens=5, enforce_eager=enforce_eager
+    )
+    config.speculative_config.method = "mtp"
+    config.speculative_config.draft_model_config = Mock(spec=ModelConfig)
+    config.speculative_config.draft_model_config.get_hidden_size.return_value = 4
+    config.speculative_config.draft_model_config.get_vocab_size.return_value = 8
+    config.compilation_config = CompilationConfig(
+        mode=CompilationMode.VLLM_COMPILE,
+        cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY,
+        cudagraph_capture_sizes=[6, 12, 24],
+        max_cudagraph_capture_size=24,
+    )
+    target_compilation = config.compilation_config
+    monkeypatch.setattr(base_spec_module, "_target_feeds_hc_residual", lambda _: False)
+
+    speculator = _TestSpeculator(config, torch.device("cpu"))
+
+    draft_compilation = speculator.vllm_config.compilation_config
+    if enforce_eager:
+        assert draft_compilation.mode == CompilationMode.NONE
+    else:
+        assert draft_compilation is target_compilation
+    assert target_compilation.mode == CompilationMode.VLLM_COMPILE
+    assert target_compilation.cudagraph_mode == CUDAGraphMode.FULL_DECODE_ONLY
+    assert target_compilation.cudagraph_capture_sizes == [6, 12, 24]
+    assert target_compilation.max_cudagraph_capture_size == 24
+    assert (
+        draft_compilation.static_forward_context
+        is target_compilation.static_forward_context
+    )
+    assert (
+        draft_compilation.static_all_moe_layers
+        is target_compilation.static_all_moe_layers
+    )
 
 
 @pytest.mark.parametrize("cg_mode", [CUDAGraphMode.NONE, CUDAGraphMode.FULL])
@@ -170,6 +227,7 @@ def test_speculator_uses_draft_model_hidden_size(monkeypatch, hc_mult, expected)
     )
     speculative_config = SimpleNamespace(
         method="mtp",
+        enforce_eager=None,
         num_speculative_tokens=3,
         draft_model_config=draft_model_config,
         use_local_argmax_reduction=False,

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import copy
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import replace
@@ -10,7 +11,7 @@ import torch
 import torch.nn as nn
 
 from vllm.config import VllmConfig, get_layers_from_vllm_config
-from vllm.config.compilation import CUDAGraphMode
+from vllm.config.compilation import CompilationMode, CUDAGraphMode
 from vllm.distributed.eplb.eplb_state import EplbState
 from vllm.logger import init_logger
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
@@ -104,11 +105,15 @@ class BaseSpeculator(ABC):
 
 class DraftModelSpeculator(BaseSpeculator):
     def __init__(self, vllm_config: VllmConfig, device: torch.device):
+        assert vllm_config.speculative_config is not None
+        self.speculative_config = vllm_config.speculative_config
+        if self.speculative_config.enforce_eager:
+            vllm_config = copy.copy(vllm_config)
+            vllm_config.compilation_config = copy.copy(vllm_config.compilation_config)
+            vllm_config.compilation_config.mode = CompilationMode.NONE
         self.vllm_config = vllm_config
         self.device = device
 
-        assert vllm_config.speculative_config is not None
-        self.speculative_config = vllm_config.speculative_config
         self.method = self.speculative_config.method
         self.num_speculative_steps = self.speculative_config.num_speculative_tokens
         self.draft_model_config = self.speculative_config.draft_model_config
